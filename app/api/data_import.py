@@ -18,7 +18,7 @@ from app.services import (
     build_default_pipeline,
 )
 
-router = APIRouter(tags=["data import"])
+router = APIRouter(prefix="/api/v1", tags=["data import"])
 logger = logging.getLogger(__name__)
 
 STATUSES: Dict[str, ImportStatus] = {}
