@@ -1,0 +1,9 @@
+yaml
+yaml_version: 1.0
+
+files:
+  /mnt/nas/olympus_credit_txn_{cob_date}.dat:
+    delimiter: "|"
+    header: False
+    required_columns_by_index:
+      2,4,5,6,16

@@ -1,0 +1,82 @@
+OUTPUT_DIR: output
+DROPBOX_DIR: /mnt/nas
+DATA_MAP: conf/data_map.csv
+
+API_SERVERS:
+  service1:
+    BASE_URL: https://api.service1.com/v1
+    API_KEY: servicel_api_key_here
+    API_SECRET: servicel_secret_or_token
+  service2:
+    BASE_URL: https://api.service2.com/v1
+    API_KEY: service2_api_key_here
+    API_SECRET: service2_secret_or_token
+  service3:
+    BASE_URL: https://api.service2.com/v1
+    API_KEY: service2_api_key_here
+    API_SECRET: service2_secret_or_token
+
+DATABASES:
+  neo4j :
+    NE04J_URI: bolt://sd-fb5e-ceca.nam.nsroot.net:7687
+    USER: mc56506
+    PASSWORD: "mc56506mc56506"
+    DATABASE: datalineagess99601
+  oracle:
+    HOST: oracle.example.com
+    PORT: 1521
+    USER: oracle_user
+    PASSWORD: oracle_password
+    SERVICE_NAME: ORCL
+  sybase:
+    HOST: sybase.example.com
+    PORT: 5000
+    USER: sybase_user
+    PASSWORD: sybase_password
+    DATABASE: sybase_db
+  postgres:
+    HOST: postgres.example.com
+    PORT: 5432
+    USER: postgres_user
+    PASSWORD: postgres_password
+    DATABASE: postgres_db
+  mssql:
+    HOST: mssql.example.com
+    PORT: 1433
+    USER: mssql_user
+    PASSWORD: mssql_password
+    DATABASE: mssql_db
+  hive:
+    HOST: hive.example.com
+    PORT: 10000
+    USER: hive_user
+    PASSWORD: hive_password
+    DATABASE: hive_db
+  mongodb:
+    HOST: mongodb.example.com
+    PORT: 27017
+    USER: mongodb_user
+    PASSWORD: mongodb_password
+    DATABASE: mongodb_db
+    AUTH_SOURCE: admin
+
+S3_BUCKETS:
+bucket1:
+  BUCKET_ENDPOINT: https://3site-obj-wip4.nam.nsroot.net
+  BUCKET_NAME: crc-s3-nr-eas-uat
+  ACCESS_KEY: cQzfZ8ZzsWEiqkFgU1hz
+  PRIVATE_KEY: Y3LiR7829TJK1FBbCHOdW8ngtiBom4QXyqIuFuUJ
+  PROXY:
+  http: http://webproxy.wlb2.nam.nsroot.net:8080
+  https: http://webproxy.wlb2.nam.nsroot.net:8080
+
+LINUX_ SERVERS:
+  sd-fb5e-ceca:
+    user: mc56506
+    pass: Francis@8888
+  server1:
+    user: mC56506
+    pass: Francis@8888
+  server2:
+    user: mc56506
+    pass: Francis@8888

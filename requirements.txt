@@ -1,0 +1,10 @@
+fastapi==0.115.2
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+black==24.10.0
+ruff==0.6.9
+pytest==8.3.3
+mypy==1.11.2
+neo4j==5.23.1
