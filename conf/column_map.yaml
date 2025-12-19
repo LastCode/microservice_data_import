@@ -1,9 +1,91 @@
-yaml
-yaml_version: 1.0
+yaml_version: "1.0"
 
-files:
-  /mnt/nas/olympus_credit_txn_{cob_date}.dat:
-    delimiter: "|"
-    header: False
-    required_columns_by_index:
-      2,4,5,6,16
+# Column mapping configuration for data import pipeline
+# This file defines how source files should be processed
+#
+# Available placeholders:
+#   {cob_date} - COB date in YYYYMMDD format
+#   {dropbox_dir} - Base directory from settings.yaml DROPBOX_DIR
+
+domains:
+  Credit Risk Transactions:
+    source_file_pattern: "olympus_credit_txn_{cob_date}.dat"
+    delimiter: "\x01"
+    has_header: false
+    output_delimiter: ","
+
+    # Columns to extract from source file (1-based index for cut command)
+    required_columns_by_index: "2,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,26,43,44,45,46,47,48,49,50"
+
+    # Column names for the extracted columns (in order)
+    column_names:
+      - gfcid
+      - cagid
+      - obligor_name
+      - cagid_name
+      - transaction_id
+      - uitid
+      - netting_id
+      - netting_type
+      - trade_date
+      - cob_date
+      - is_stress_eligible
+      - mtm_usd_amount
+      - mtm_local_amount
+      - mtm_currency_code
+      - dsft_illiquid_market_value
+      - dsft_liquid_market_value
+      - accrued_interest
+      - citi_payable_cash
+      - citi_receivable_cash
+      - citi_receivable_security
+      - cmdl_fs_amount
+      - cmvg_fs_amount
+      - crdl_fs_amount
+      - eqdl_fs_amount
+      - equl_fs_amount
+      - eqvg_fs_amount
+      - fxdl_fs_amount
+
+    # Column to use for splitting files
+    split_by_column: "gfcid"
+    split_by_column_index: 0  # 0-based index in the extracted columns
+
+    # Output paths (use {dropbox_dir} and {cob_date} placeholders)
+    raw_output_path: "{dropbox_dir}/olympus_credit_txn_{cob_date}.dat"
+    processed_output_dir: "{dropbox_dir}/{cob_date}"
+    processed_output_file: "olympus_credit_txn_{cob_date}.dat"
+    split_output_dir: "{dropbox_dir}/{cob_date}/split"
+    split_output_prefix: "olympus_credit_txn_{cob_date}-"
+
+  Market Risk Positions:
+    source_file_pattern: "market_risk_pos_{cob_date}.dat"
+    delimiter: "\x01"
+    has_header: false
+    output_delimiter: ","
+    required_columns_by_index: "1,2,3,4,5,6,7,8,9,10"
+    column_names:
+      - position_id
+      - book_id
+      - instrument_id
+      - quantity
+      - market_value
+      - currency
+      - trade_date
+      - settlement_date
+      - counterparty_id
+      - risk_factor
+    split_by_column: "book_id"
+    split_by_column_index: 1
+    raw_output_path: "{dropbox_dir}/market_risk_pos_{cob_date}.dat"
+    processed_output_dir: "{dropbox_dir}/{cob_date}"
+    processed_output_file: "market_risk_pos_{cob_date}.dat"
+    split_output_dir: "{dropbox_dir}/{cob_date}/split"
+    split_output_prefix: "market_risk_pos_{cob_date}-"
+
+# Default settings
+defaults:
+  delimiter: "\x01"
+  output_delimiter: ","
+  has_header: false
+  chunk_size: 50000

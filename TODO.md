@@ -57,12 +57,11 @@ i. data import 的工作事項：
   - Query 參數用來過濾（例如 ?domain_type=），避免把類型硬編進路徑除非有階層需要。
 
   建議的啟動 payload 範例（POST /imports）
-
+  ex:"20251106" , "20251107" 
   {
-    "domain_type": "equity",
-    "domain_name": "us_equity",
-    "cob_date_1": "2024-12-05",
-    "cob_date_2": "2024-12-06"
+    "domain_type": "CURATED",
+    "domain_name": "credit_risk_transactions",
+    "cob_date_1": "20251106" 
   }
 
   若需要多階段子任務

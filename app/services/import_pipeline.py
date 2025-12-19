@@ -1,24 +1,42 @@
-"""Import pipeline scaffolding covering validation, extract, transform, and load."""
+"""Import pipeline orchestrating the complete data import workflow.
+
+Pipeline Steps:
+1. Fetch source file - Use connector to retrieve file from remote location
+2. Cut columns - Extract required columns from source file
+3. Split by GFCID - Split processed file by GFCID column
+4. Load to Neo4j - Import split files into Neo4j graph database
+"""
 from __future__ import annotations
 
-import csv
-import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, MutableMapping, Protocol, Sequence
+from typing import Any, Dict, List, MutableMapping, Optional
 from uuid import uuid4
 
-from app.storage.graph import get_driver
+from .connectors import (
+    ColumnMapResolver,
+    ConnectorConfig,
+    ConnectorFactory,
+    DataMapResolver,
+    SettingsLoader,
+)
+from .processors import DataProcessor, ProcessResult
+from .neo4j_loader import Neo4jLoader, LoadResult, create_loader_from_settings
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowStatus(str, Enum):
     """Workflow lifecycle states."""
-
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    FETCHING = "fetching"
+    CUTTING = "cutting"
+    SPLITTING = "splitting"
+    LOADING = "loading"
     DONE = "done"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -27,274 +45,332 @@ class WorkflowStatus(str, Enum):
 @dataclass
 class ImportRequest:
     """Inbound request to run an import."""
-
     domain_type: str
     domain_name: str
     cob_date: date
 
+    @property
+    def cob_date_str(self) -> str:
+        """Return COB date as string (YYYYMMDD format)."""
+        if isinstance(self.cob_date, str):
+            return self.cob_date.replace("-", "")
+        return self.cob_date.strftime("%Y%m%d")
+
 
 @dataclass
 class WorkflowState:
-    """In-memory workflow tracking."""
-
+    """In-memory workflow tracking with detailed step information."""
     workflow_id: str
     status: WorkflowStatus
-    message: str | None = None
-
-
-class ParameterValidator:
-    """Validate inbound parameters."""
-
-    def validate(self, request: ImportRequest) -> None:
-        missing = [
-            name
-            for name, value in {
-                "domain_type": request.domain_type,
-                "domain_name": request.domain_name,
-                "cob_date": request.cob_date,
-            }.items()
-            if value in (None, "")
-        ]
-        if missing:
-            raise ValueError(f"Missing required fields: {', '.join(missing)}")
-
-
-class Neo4jTransactionChecker:
-    """Check whether transactions already exist in Neo4j for a given COB/domain."""
-
-    def exists(self, request: ImportRequest) -> bool:
-        driver = get_driver()
-        if driver is None:
-            return False
-        # TODO: Implement Cypher query to detect transactions for the given (domain_type, domain_name, cob_date).
-        raise NotImplementedError("Add Cypher query for transaction existence check.")
-
-
-@dataclass
-class DataSourceConfig:
-    """Resolved data source configuration from data_map.csv."""
-
-    source_type: str
-    location: str
-    options: Dict[str, Any]
-
-
-class DataMapResolver:
-    """Resolve domain -> data source config from conf/data_map.csv."""
-
-    def __init__(self, data_map_path: Path = Path("conf/data_map.csv")) -> None:
-        self.data_map_path = data_map_path
-
-    def resolve(self, request: ImportRequest) -> DataSourceConfig:
-        if not self.data_map_path.exists():
-            raise FileNotFoundError(f"data map not found: {self.data_map_path}")
-
-        with self.data_map_path.open("r", newline="") as handle:
-            reader = csv.DictReader(handle)
-            target_type = request.domain_type.strip().upper()
-            target_name = request.domain_name.strip().lower()
-
-            for row in reader:
-                row_type = (row.get("domain_type") or "").strip().upper()
-                row_name = (row.get("domain_name") or "").strip().lower()
-                if row_type != target_type or row_name != target_name:
-                    continue
-
-                options_raw = row.get("data_source_parameters") or "{}"
-                try:
-                    options = json.loads(options_raw.replace('""', '"'))
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid data_source_parameters JSON for {row_name}") from exc
-
-                return DataSourceConfig(
-                    source_type=(row.get("data_source_type") or "").strip(),
-                    location=row.get("pyhysical_name") or "",
-                    options=options,
-                )
-
-        raise ValueError(
-            f"No data source config found for domain_type={request.domain_type}, domain_name={request.domain_name}"
-        )
-
-
-class DataFetcher(Protocol):
-    """Fetcher contract for pulling data from different source types."""
-
-    def fetch(self, config: DataSourceConfig, request: ImportRequest) -> Path:
-        ...
-
-
-class FetcherRegistry:
-    """Registry to look up fetchers by source_type."""
-
-    def __init__(self) -> None:
-        self._fetchers: Dict[str, DataFetcher] = {}
-
-    def register(self, source_type: str, fetcher: DataFetcher) -> None:
-        self._fetchers[source_type.lower()] = fetcher
-
-    def get(self, source_type: str) -> DataFetcher:
-        key = source_type.lower()
-        if key not in self._fetchers:
-            raise KeyError(f"No fetcher registered for source_type={source_type}")
-        return self._fetchers[key]
-
-
-class LocalFileFetcher:
-    """Fetcher for files reachable on the local filesystem (e.g., NAS mount)."""
-
-    def fetch(self, config: DataSourceConfig, request: ImportRequest) -> Path:
-        template = config.options.get("file_path") or config.location
-        if not template:
-            raise ValueError("file_path is required for local fetcher")
-
-        file_path = Path(
-            template.format(
-                cob=request.cob_date_1.isoformat(),
-                domain_type=request.domain_type,
-                domain_name=request.domain_name,
-            )
-        )
-        if not file_path.exists():
-            raise FileNotFoundError(f"file not found: {file_path}")
-        return file_path
-
-
-class DataTransformer:
-    """Data cleaning and splitting operations."""
-
-    def clean(self, raw_path: Path) -> Path:
-        # TODO: implement cleaning, type conversion, missing value handling.
-        raise NotImplementedError
-
-    def cut_columns(self, cleaned_path: Path) -> Path:
-        # TODO: implement column slicing to a predefined schema.
-        raise NotImplementedError
-
-    def split_by_gfcid(self, cut_path: Path) -> Sequence[Path]:
-        # TODO: split into batch files by GFCID.
-        raise NotImplementedError
-
-
-class DataLoader:
-    """Load transformed batches into Neo4j."""
-
-    def ensure_indexes_and_constraints(self, request: ImportRequest) -> None:
-        # TODO: create indexes/constraints prior to ingest.
-        raise NotImplementedError
-
-    def create_nodes(self, batches: Sequence[Path], request: ImportRequest) -> None:
-        # TODO: load nodes (can be parallelized).
-        raise NotImplementedError
-
-    def create_relationships(self, batches: Sequence[Path], request: ImportRequest) -> None:
-        # TODO: load relationships (can be parallelized).
-        raise NotImplementedError
+    message: Optional[str] = None
+    current_step: Optional[str] = None
+    steps_completed: List[str] = field(default_factory=list)
+    files_created: List[str] = field(default_factory=list)
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 class ImportPipeline:
-    """Orchestrate validate -> extract -> transform -> load steps."""
+    """Orchestrate the complete import pipeline."""
 
     def __init__(
         self,
-        validator: ParameterValidator,
-        transaction_checker: Neo4jTransactionChecker,
-        data_map_resolver: DataMapResolver,
-        fetcher_registry: FetcherRegistry,
-        transformer: DataTransformer,
-        loader: DataLoader,
-        status_store: MutableMapping[str, WorkflowState] | None = None,
-    ) -> None:
-        self.validator = validator
-        self.transaction_checker = transaction_checker
-        self.data_map_resolver = data_map_resolver
-        self.fetcher_registry = fetcher_registry
-        self.transformer = transformer
-        self.loader = loader
-        self.driver = get_driver()
+        data_map_resolver: Optional[DataMapResolver] = None,
+        column_map_resolver: Optional[ColumnMapResolver] = None,
+        settings_loader: Optional[SettingsLoader] = None,
+        status_store: Optional[MutableMapping[str, WorkflowState]] = None,
+    ):
+        """
+        Initialize the import pipeline.
+
+        Args:
+            data_map_resolver: Resolver for data source configuration
+            column_map_resolver: Resolver for column mapping configuration
+            settings_loader: Loader for application settings
+            status_store: Optional store for workflow states
+        """
+        self.data_map_resolver = data_map_resolver or DataMapResolver()
+        self.column_map_resolver = column_map_resolver or ColumnMapResolver()
+        self.settings_loader = settings_loader or SettingsLoader()
         self.status_store: MutableMapping[str, WorkflowState] = status_store or {}
 
-    def run(self, request: ImportRequest, workflow_id: str | None = None) -> WorkflowState:
-        """Execute the pipeline; update status_store throughout."""
+    def run(
+        self,
+        request: ImportRequest,
+        workflow_id: Optional[str] = None,
+        skip_fetch: bool = False,
+        skip_cut: bool = False,
+        skip_split: bool = False,
+        skip_load: bool = False,
+    ) -> WorkflowState:
+        """
+        Execute the complete import pipeline.
+
+        Args:
+            request: Import request with domain and date info
+            workflow_id: Optional workflow ID (generated if not provided)
+            skip_fetch: Skip the file fetch step
+            skip_cut: Skip the column cutting step
+            skip_split: Skip the file splitting step
+            skip_load: Skip the Neo4j loading step
+
+        Returns:
+            WorkflowState with final status
+        """
         workflow_id = workflow_id or str(uuid4())
-        state = WorkflowState(workflow_id=workflow_id, status=WorkflowStatus.PENDING)
+        state = WorkflowState(
+            workflow_id=workflow_id,
+            status=WorkflowStatus.PENDING,
+            current_step="initializing"
+        )
         self.status_store[workflow_id] = state
 
         try:
-            self.validator.validate(request)
-            if self.transaction_checker.exists(request):
-                state.status = WorkflowStatus.DONE
-                state.message = "Data already exists for given domain/cob_date_1"
-                return state
+            # Validate request
+            self._validate_request(request)
 
-            state.status = WorkflowStatus.IN_PROGRESS
-            config = self.data_map_resolver.resolve(request)
-            fetcher = self.fetcher_registry.get(config.source_type)
-            raw_data = fetcher.fetch(config, request)
-            cleaned = self.transformer.clean(raw_data)
-            cut = self.transformer.cut_columns(cleaned)
-            batches = list(self.transformer.split_by_gfcid(cut))
+            # Load configurations
+            settings = self.settings_loader.load()
+            data_config = self.data_map_resolver.resolve(
+                request.domain_type, request.domain_name
+            )
+            if not data_config:
+                raise ValueError(
+                    f"No data source configuration found for "
+                    f"{request.domain_type}/{request.domain_name}"
+                )
 
-            self.loader.ensure_indexes_and_constraints(request)
-            self.loader.create_nodes(batches, request)
-            self.loader.create_relationships(batches, request)
+            column_config = self.column_map_resolver.resolve(request.domain_name)
+            if not column_config:
+                # Use defaults if no specific config
+                column_config = self.column_map_resolver.get_defaults()
+                logger.warning(f"Using default column config for {request.domain_name}")
 
+            cob_date = request.cob_date_str
+
+            # Get dropbox directory from settings
+            dropbox_dir = settings.get("DROPBOX_DIR", "/mnt/nas")
+
+            # Step 1: Fetch source file
+            state.status = WorkflowStatus.FETCHING
+            state.current_step = "fetch"
+            self._update_state(state)
+
+            if skip_fetch:
+                logger.info("Skipping fetch step")
+                source_path = self._get_source_path(data_config, cob_date)
+            else:
+                source_path = self._fetch_file(request, data_config, settings, state)
+                if not source_path:
+                    raise RuntimeError("Failed to fetch source file")
+
+            state.steps_completed.append("fetch")
+            state.files_created.append(str(source_path))
+
+            # Step 2 & 3: Cut columns and split
+            state.status = WorkflowStatus.CUTTING
+            state.current_step = "process"
+            self._update_state(state)
+
+            processor = DataProcessor(column_config, dropbox_dir=dropbox_dir)
+            process_results = processor.process_file(
+                source_path,
+                cob_date,
+                skip_cut=skip_cut,
+                skip_split=skip_split
+            )
+
+            # Check cut result
+            cut_result = process_results.get("cut")
+            if cut_result and not cut_result.success:
+                raise RuntimeError(f"Column cutting failed: {cut_result.error}")
+
+            if cut_result and cut_result.output_path:
+                state.files_created.append(str(cut_result.output_path))
+                state.metrics["rows_after_cut"] = cut_result.rows_processed
+
+            state.steps_completed.append("cut")
+
+            # Check split result
+            state.status = WorkflowStatus.SPLITTING
+            state.current_step = "split"
+            self._update_state(state)
+
+            split_result = process_results.get("split")
+            if split_result and not split_result.success:
+                raise RuntimeError(f"File splitting failed: {split_result.error}")
+
+            split_files = []
+            if split_result and split_result.output_paths:
+                split_files = split_result.output_paths
+                state.files_created.extend([str(p) for p in split_files])
+                state.metrics["split_files_count"] = len(split_files)
+
+            state.steps_completed.append("split")
+
+            # Step 4: Load to Neo4j
+            state.status = WorkflowStatus.LOADING
+            state.current_step = "load"
+            self._update_state(state)
+
+            if skip_load:
+                logger.info("Skipping Neo4j load step")
+            else:
+                load_result = self._load_to_neo4j(split_files, settings, state, dropbox_dir)
+                if not load_result.success:
+                    logger.warning(f"Neo4j load had failures: {load_result.error}")
+                    state.metrics["load_failed_files"] = load_result.failed_files
+
+                state.metrics["nodes_created"] = load_result.nodes_created
+                state.metrics["relationships_created"] = load_result.relationships_created
+
+            state.steps_completed.append("load")
+
+            # Complete
             state.status = WorkflowStatus.COMPLETED
+            state.current_step = None
+            state.message = f"Successfully processed {request.domain_name} for {cob_date}"
+            self._update_state(state)
+
+            logger.info(f"Pipeline completed for workflow {workflow_id}")
             return state
+
         except Exception as exc:
             state.status = WorkflowStatus.FAILED
             state.message = str(exc)
+            self._update_state(state)
+            logger.exception(f"Pipeline failed for workflow {workflow_id}: {exc}")
             raise
 
+    def _validate_request(self, request: ImportRequest) -> None:
+        """Validate the import request."""
+        missing = []
+        if not request.domain_type:
+            missing.append("domain_type")
+        if not request.domain_name:
+            missing.append("domain_name")
+        if not request.cob_date:
+            missing.append("cob_date")
 
-class PassthroughTransformer(DataTransformer):
-    """Transformer stub that leaves data untouched but follows the interface."""
+        if missing:
+            raise ValueError(f"Missing required fields: {', '.join(missing)}")
 
-    def clean(self, raw_path: Path) -> Path:
-        return raw_path
+    def _get_source_path(self, data_config: Dict[str, Any], cob_date: str) -> Path:
+        """Get the expected source file path."""
+        template = data_config.get("source_file_path_template", "")
+        path_str = template.format(cob_date=cob_date, cob=cob_date)
+        return Path(path_str)
 
-    def cut_columns(self, cleaned_path: Path) -> Path:
-        return cleaned_path
+    def _fetch_file(
+        self,
+        request: ImportRequest,
+        data_config: Dict[str, Any],
+        settings: Dict[str, Any],
+        state: WorkflowState
+    ) -> Optional[Path]:
+        """Fetch the source file using the appropriate connector."""
+        try:
+            connector_type = data_config.get("connector_type", "linux")
+            connector_params = data_config.get("connector_params", {})
 
-    def split_by_gfcid(self, cut_path: Path) -> Sequence[Path]:
-        return [cut_path]
+            config = ConnectorConfig(
+                connector_type=connector_type,
+                server_name=connector_params.get("server_name"),
+                params=connector_params
+            )
 
+            connector = ConnectorFactory.create(connector_type, config, settings)
 
-class NoOpLoader(DataLoader):
-    """Loader stub that does nothing (placeholder for real Neo4j load)."""
+            # Get source and destination paths
+            cob_date = request.cob_date_str
+            source_template = data_config.get("source_file_path_template", "")
+            source_path = source_template.format(cob_date=cob_date, cob=cob_date)
 
-    def ensure_indexes_and_constraints(self, request: ImportRequest) -> None:
-        return None
+            # Destination is in the dropbox directory
+            dropbox_dir = settings.get("DROPBOX_DIR", "/mnt/nas")
+            dest_filename = Path(source_path).name
+            dest_path = Path(dropbox_dir) / dest_filename
 
-    def create_nodes(self, batches: Sequence[Path], request: ImportRequest) -> None:
-        return None
+            logger.info(f"Fetching {source_path} to {dest_path}")
+            result = connector.fetch(source_path, dest_path)
 
-    def create_relationships(self, batches: Sequence[Path], request: ImportRequest) -> None:
-        return None
+            if result.success:
+                state.metrics["bytes_fetched"] = result.bytes_transferred
+                return result.local_path
+            else:
+                logger.error(f"Fetch failed: {result.error}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error in fetch step: {e}")
+            return None
+
+    def _load_to_neo4j(
+        self,
+        file_paths: List[Path],
+        settings: Dict[str, Any],
+        state: WorkflowState,
+        dropbox_dir: str = "/mnt/nas"
+    ) -> LoadResult:
+        """Load files to Neo4j."""
+        try:
+            loader = create_loader_from_settings(settings)
+            if not loader:
+                return LoadResult(
+                    success=False,
+                    error="Failed to create Neo4j loader - check configuration"
+                )
+
+            try:
+                # Pass dropbox_dir as base_path for Neo4j LOAD CSV
+                base_path = dropbox_dir.rstrip("/") + "/"
+                result = loader.load_files(file_paths, base_path=base_path)
+                return result
+            finally:
+                loader.close()
+
+        except Exception as e:
+            logger.error(f"Neo4j load error: {e}")
+            return LoadResult(success=False, error=str(e))
+
+    def _update_state(self, state: WorkflowState) -> None:
+        """Update the state in the store."""
+        self.status_store[state.workflow_id] = state
 
 
 def build_default_pipeline(
-    status_store: MutableMapping[str, WorkflowState] | None = None,
-    logger: logging.Logger | None = None,
+    status_store: Optional[MutableMapping[str, WorkflowState]] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> ImportPipeline:
-    """Assemble an ImportPipeline with default stub components."""
-    validator = ParameterValidator()
-    transaction_checker = Neo4jTransactionChecker()
-    data_map_resolver = DataMapResolver()
-    fetcher_registry = FetcherRegistry()
-    fetcher_registry.register("linux", LocalFileFetcher())
-    transformer = PassthroughTransformer()
-    loader = NoOpLoader()
+    """
+    Build an ImportPipeline with default configuration.
 
+    Args:
+        status_store: Optional store for workflow states
+        logger: Optional logger instance
+
+    Returns:
+        Configured ImportPipeline instance
+    """
     pipeline = ImportPipeline(
-        validator=validator,
-        transaction_checker=transaction_checker,
-        data_map_resolver=data_map_resolver,
-        fetcher_registry=fetcher_registry,
-        transformer=transformer,
-        loader=loader,
+        data_map_resolver=DataMapResolver(),
+        column_map_resolver=ColumnMapResolver(),
+        settings_loader=SettingsLoader(),
         status_store=status_store,
     )
+
     if logger:
-        logger.debug("Default import pipeline constructed with stub components")
+        logger.debug("Default import pipeline constructed")
+
     return pipeline
+
+
+# Legacy exports for backward compatibility
+ParameterValidator = None  # Removed - validation now in pipeline
+Neo4jTransactionChecker = None  # Removed - handled by loader
+DataSourceConfig = None  # Removed - using ConnectorConfig
+FetcherRegistry = None  # Removed - using ConnectorFactory
+LocalFileFetcher = None  # Removed - using LinuxConnector
+DataTransformer = None  # Removed - using DataProcessor
+DataLoader = None  # Removed - using Neo4jLoader
+PassthroughTransformer = None  # Removed
+NoOpLoader = None  # Removed

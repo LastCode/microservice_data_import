@@ -1,5 +1,5 @@
 OUTPUT_DIR: output
-DROPBOX_DIR: /mnt/nas
+DROPBOX_DIR: /Users/francis/dev_citi/microservice_data_import/mnt/nas
 DATA_MAP: conf/data_map.csv
 
 API_SERVERS:
@@ -18,6 +18,11 @@ API_SERVERS:
 
 DATABASES:
   neo4j :
+    NE04J_URI: bolt://localhost:7689
+    USER: neo4j
+    PASSWORD: "Welc(0)me1;"
+    DATABASE: datalineage
+  neo4j_ori :
     NE04J_URI: bolt://sd-fb5e-ceca.nam.nsroot.net:7687
     USER: mc56506
     PASSWORD: "mc56506mc56506"
@@ -76,7 +81,4 @@ LINUX_ SERVERS:
     pass: Francis@8888
   server1:
     user: mC56506
-    pass: Francis@8888
-  server2:
-    user: mc56506
     pass: Francis@8888

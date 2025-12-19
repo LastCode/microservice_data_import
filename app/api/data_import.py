@@ -31,14 +31,7 @@ class ImportJobRequest(BaseModel):
 
     domain_type: str
     domain_name: str
-    cob_date_1: date = Field(..., alias="cob_date_1")
-    cob_date_2: date = Field(..., alias="cob_date_2")
-
-    @model_validator(mode="after")
-    def normalize_dates(self) -> "ImportJobRequest":
-        if self.cob_date_2 < self.cob_date_1:
-            raise ValueError("cob_date_2 must be on/after cob_date_1")
-        return self
+    cob_date: date
 
 
 def _state_to_status(state: WorkflowState) -> ImportStatus:
@@ -50,21 +43,16 @@ def _state_to_status(state: WorkflowState) -> ImportStatus:
 
 
 def _run_pipeline(workflow_id: str, payload: ImportJobRequest) -> None:
-    """Run the import pipeline in the background for cob_date_1 and cob_date_2 sequentially."""
+    """Run the import pipeline in the background."""
     STATUSES[workflow_id] = ImportStatus(workflow_id=workflow_id, status=WorkflowStatus.IN_PROGRESS.value)
-    dates = [payload.cob_date_1, payload.cob_date_2]
     try:
-        state: WorkflowState | None = None
-        for cob_date in dates:
-            request = ImportRequest(
-                domain_type=payload.domain_type,
-                domain_name=payload.domain_name,
-                cob_date=cob_date,
-            )
-            state = pipeline.run(request, workflow_id=workflow_id)
-            STATUSES[workflow_id] = _state_to_status(state)
-        if state:
-            STATUSES[workflow_id] = _state_to_status(state)
+        request = ImportRequest(
+            domain_type=payload.domain_type,
+            domain_name=payload.domain_name,
+            cob_date=payload.cob_date,
+        )
+        state = pipeline.run(request, workflow_id=workflow_id)
+        STATUSES[workflow_id] = _state_to_status(state)
     except Exception as exc:  # pragma: no cover - background failure logging
         logger.exception("Import workflow failed: %s", workflow_id)
         STATUSES[workflow_id] = ImportStatus(
