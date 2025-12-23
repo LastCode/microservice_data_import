@@ -6,6 +6,61 @@
 
 ---
 
+## 功能說明
+
+### 用途
+這是一個 **數據導入 API**，用於將外部數據文件導入到 Neo4j 圖數據庫中。
+
+### 端點
+
+| 方法 | 路徑 | 功能 |
+|------|------|------|
+| `POST` | `/api/v1/imports` | 提交導入任務 |
+| `GET` | `/api/v1/imports/{workflow_id}` | 查詢任務狀態 |
+
+### POST `/api/v1/imports`
+
+**請求參數：**
+```json
+{
+  "domain_type": "API",           // 域類型 (API, CORE, CURATED 等)
+  "domain_name": "Credit Risk",   // 域名稱
+  "cob_date": "2024-09-01"        // 業務日期 (Close of Business Date)
+}
+```
+
+**處理流程：**
+1. **Fetch** - 從遠端 (Linux/SFTP) 獲取源文件
+2. **Cut** - 裁切需要的列
+3. **Split** - 按 GFCID 分割成多個文件
+4. **Load** - 批量加載到 Neo4j
+
+**響應：**
+```json
+{
+  "workflow_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending"
+}
+```
+
+### GET `/api/v1/imports/{workflow_id}`
+
+**查詢導入任務狀態：**
+```json
+{
+  "workflow_id": "550e8400-...",
+  "status": "completed",          // pending, fetching, cutting, splitting, loading, completed, failed
+  "detail": "Successfully processed..."
+}
+```
+
+### 特點
+- **非同步處理** - API 立即返回，後台執行導入
+- **狀態追蹤** - 可隨時查詢任務進度
+- **四階段流水線** - Fetch → Cut → Split → Load
+
+---
+
 ## API 請求流程
 
 ```

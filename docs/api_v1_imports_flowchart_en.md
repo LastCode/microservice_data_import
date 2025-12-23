@@ -6,6 +6,61 @@ This document describes the complete processing flow of the data import API endp
 
 ---
 
+## API Description
+
+### Purpose
+This is a **Data Import API** used to import external data files into a Neo4j graph database.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/imports` | Submit an import job |
+| `GET` | `/api/v1/imports/{workflow_id}` | Query job status |
+
+### POST `/api/v1/imports`
+
+**Request Parameters:**
+```json
+{
+  "domain_type": "API",           // Domain type (API, CORE, CURATED, etc.)
+  "domain_name": "Credit Risk",   // Domain name
+  "cob_date": "2024-09-01"        // Close of Business Date
+}
+```
+
+**Processing Steps:**
+1. **Fetch** - Retrieve source file from remote (Linux/SFTP)
+2. **Cut** - Extract required columns
+3. **Split** - Split into multiple files by GFCID
+4. **Load** - Batch load into Neo4j
+
+**Response:**
+```json
+{
+  "workflow_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending"
+}
+```
+
+### GET `/api/v1/imports/{workflow_id}`
+
+**Query import job status:**
+```json
+{
+  "workflow_id": "550e8400-...",
+  "status": "completed",          // pending, fetching, cutting, splitting, loading, completed, failed
+  "detail": "Successfully processed..."
+}
+```
+
+### Key Features
+- **Asynchronous Processing** - API returns immediately, import runs in background
+- **Status Tracking** - Query job progress at any time
+- **Four-Stage Pipeline** - Fetch → Cut → Split → Load
+
+---
+
 ## API Request Flow
 
 ```
