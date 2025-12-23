@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.services import list_domain_types, list_domains, list_periods
 
-router = APIRouter(prefix="/api/v1/metadata", tags=["metadata"])
+router = APIRouter(prefix="", tags=["metadata"])
 
 
 @router.get("/domain-types", response_model=List[str])
