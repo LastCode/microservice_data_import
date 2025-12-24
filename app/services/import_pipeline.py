@@ -128,7 +128,7 @@ class ImportPipeline:
             # Validate request
             self._validate_request(request)
 
-            # Load configurations
+            # 0. Load configurations
             settings = self.settings_loader.load()
             data_config = self.data_map_resolver.resolve(
                 request.domain_type, request.domain_name
@@ -215,7 +215,9 @@ class ImportPipeline:
             if skip_load:
                 logger.info("Skipping Neo4j load step")
             else:
-                load_result = self._load_to_neo4j(split_files, settings, state, dropbox_dir)
+                load_result = self._load_to_neo4j(
+                    split_files, settings, state, dropbox_dir, cob_date=cob_date
+                )
                 if not load_result.success:
                     logger.warning(f"Neo4j load had failures: {load_result.error}")
                     state.metrics["load_failed_files"] = load_result.failed_files
@@ -309,9 +311,10 @@ class ImportPipeline:
         file_paths: List[Path],
         settings: Dict[str, Any],
         state: WorkflowState,
-        dropbox_dir: str = "/mnt/nas"
+        dropbox_dir: str = "/mnt/nas",
+        cob_date: Optional[str] = None
     ) -> LoadResult:
-        """Load files to Neo4j."""
+        """Load files to Neo4j and run post-processing (aggregation & relationships)."""
         try:
             loader = create_loader_from_settings(settings)
             if not loader:
@@ -323,7 +326,12 @@ class ImportPipeline:
             try:
                 # Pass dropbox_dir as base_path for Neo4j LOAD CSV
                 base_path = dropbox_dir.rstrip("/") + "/"
-                result = loader.load_files(file_paths, base_path=base_path)
+                result = loader.load_files(
+                    file_paths,
+                    base_path=base_path,
+                    run_post_processing=True,
+                    cob_date=cob_date
+                )
                 return result
             finally:
                 loader.close()

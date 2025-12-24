@@ -36,8 +36,9 @@ class Neo4jLoader:
     # Other properties are set via ON CREATE SET to handle null values
     DEFAULT_QUERY_TEMPLATE = """
     CALL {{
-    LOAD CSV WITH HEADERS FROM 'file:///{file_name}' AS row
+    LOAD CSV WITH HEADERS FROM 'file://{file_name}' AS row
     FIELDTERMINATOR ','
+    WITH row WHERE row.transaction_id IS NOT NULL AND row.gfcid IS NOT NULL
     MATCH (g:Summary_GFCID {{gfcid: row.gfcid}})
     MERGE (t:Transaction {{transaction_id: row.transaction_id}})
     ON CREATE SET
@@ -105,21 +106,55 @@ class Neo4jLoader:
             logger.info("Neo4j connection closed")
 
     def ensure_constraints(self) -> bool:
-        """Create necessary constraints and indexes."""
+        """Create necessary constraints and indexes for all node types."""
         try:
             with self.driver.session(database=self.database) as session:
-                # Create constraint for Summary_GFCID
+                # ========== Constraints ==========
                 session.run(
                     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Summary_GFCID) REQUIRE n.gfcid IS UNIQUE"
                 )
-                # Create index for Transaction
+
+                # ========== Transaction Indexes ==========
                 session.run(
                     "CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.transaction_id)"
                 )
-                # Create index for gfcid on Transaction
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.cagid)"
+                )
                 session.run(
                     "CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.gfcid)"
                 )
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.netting_id)"
+                )
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.cob_date)"
+                )
+
+                # ========== Summary_CAGID Indexes ==========
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_CAGID) ON (s.cagid)"
+                )
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_CAGID) ON (s.cob_date)"
+                )
+
+                # ========== Summary_GFCID Indexes ==========
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_GFCID) ON (s.gfcid)"
+                )
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_GFCID) ON (s.cob_date)"
+                )
+
+                # ========== Summary_NETTINGID Indexes ==========
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_NETTINGID) ON (s.netting_id)"
+                )
+                session.run(
+                    "CREATE INDEX IF NOT EXISTS FOR (s:Summary_NETTINGID) ON (s.cob_date)"
+                )
+
                 logger.info("Neo4j constraints and indexes ensured")
                 return True
         except Exception as e:
@@ -207,10 +242,11 @@ class Neo4jLoader:
             self.ensure_summary_nodes(gfcids)
 
             # Prepare file path for Neo4j LOAD CSV
-            relative_path = str(file_path).replace(base_path, "").replace(" ", "%20")
+            # Use full absolute path for local Neo4j server
+            full_path = str(file_path).replace(" ", "%20")
 
             # Execute the query
-            query = self.query_template.format(file_name=relative_path)
+            query = self.query_template.format(file_name=full_path)
 
             with self.driver.session(database=self.database) as session:
                 result = session.run(query)
@@ -242,7 +278,9 @@ class Neo4jLoader:
         file_paths: List[Path],
         parallel: bool = False,
         max_workers: int = 4,
-        base_path: Optional[str] = None
+        base_path: Optional[str] = None,
+        run_post_processing: bool = False,
+        cob_date: Optional[str] = None
     ) -> LoadResult:
         """
         Load multiple CSV files into Neo4j.
@@ -252,6 +290,8 @@ class Neo4jLoader:
             parallel: Whether to load files in parallel
             max_workers: Maximum number of parallel workers
             base_path: Base path to strip from file paths
+            run_post_processing: Whether to run aggregation and create relationships after loading
+            cob_date: COB date for filtering post-processing (format: YYYY-MM-DD)
 
         Returns:
             LoadResult with aggregated status
@@ -285,6 +325,12 @@ class Neo4jLoader:
                 else:
                     failed_files.extend(result.failed_files)
 
+        # Run post-processing if requested and load was successful
+        if run_post_processing and len(failed_files) == 0:
+            logger.info("Running post-load processing (aggregation & relationships)...")
+            post_results = self.run_post_load_processing(cob_date=cob_date)
+            logger.info(f"Post-processing results: {post_results}")
+
         success = len(failed_files) == 0
         return LoadResult(
             success=success,
@@ -309,6 +355,266 @@ class Neo4jLoader:
         for file_path in file_paths:
             result = self.load_file(file_path, base_path)
             results.append(result)
+        return results
+
+    def run_cypher_file(self, file_path: Path) -> bool:
+        """
+        Execute a Cypher query from an external .cql file.
+
+        Args:
+            file_path: Path to the .cql file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not file_path.exists():
+                logger.error(f"Cypher file not found: {file_path}")
+                return False
+
+            query = file_path.read_text(encoding="utf-8")
+
+            # Remove comments and empty lines for cleaner execution
+            lines = []
+            for line in query.split("\n"):
+                stripped = line.strip()
+                if stripped and not stripped.startswith("//"):
+                    lines.append(line)
+            clean_query = "\n".join(lines)
+
+            if not clean_query.strip():
+                logger.warning(f"Empty query in file: {file_path}")
+                return True
+
+            with self.driver.session(database=self.database) as session:
+                result = session.run(clean_query)
+                summary = result.consume()
+                logger.info(
+                    f"Executed {file_path.name}: "
+                    f"nodes_created={summary.counters.nodes_created}, "
+                    f"relationships_created={summary.counters.relationships_created}"
+                )
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to execute {file_path}: {e}")
+            return False
+
+    def run_aggregation(
+        self,
+        cob_date: Optional[str] = None,
+        aggregate_types: Optional[List[str]] = None,
+        batch_size: int = 500
+    ) -> Dict[str, bool]:
+        """
+        Run aggregation queries to create Summary nodes from Transaction data.
+
+        Args:
+            cob_date: Optional COB date filter (format: YYYY-MM-DD)
+            aggregate_types: List of aggregation types to run ['cagid', 'gfcid', 'nettingid']
+                           If None, runs all aggregations
+            batch_size: Batch size for apoc.periodic.iterate
+
+        Returns:
+            Dict with aggregation type as key and success status as value
+        """
+        if aggregate_types is None:
+            aggregate_types = ["cagid", "gfcid", "nettingid"]
+
+        results = {}
+
+        # Build date filter clause
+        date_filter = ""
+        if cob_date:
+            date_filter = f" AND t.cob_date = '{cob_date}'"
+
+        for agg_type in aggregate_types:
+            try:
+                if agg_type == "cagid":
+                    success = self._aggregate_by_cagid(date_filter, batch_size)
+                elif agg_type == "gfcid":
+                    success = self._aggregate_by_gfcid(date_filter, batch_size)
+                elif agg_type == "nettingid":
+                    success = self._aggregate_by_nettingid(date_filter, batch_size)
+                else:
+                    logger.warning(f"Unknown aggregation type: {agg_type}")
+                    success = False
+
+                results[agg_type] = success
+
+            except Exception as e:
+                logger.error(f"Aggregation failed for {agg_type}: {e}")
+                results[agg_type] = False
+
+        return results
+
+    def _aggregate_by_cagid(self, date_filter: str, batch_size: int) -> bool:
+        """Aggregate Transaction data by cagid to create Summary_CAGID nodes."""
+        query = f"""
+        CALL apoc.periodic.iterate(
+          "MATCH (t:Transaction)
+           WHERE t.cagid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
+           RETURN DISTINCT t.cagid AS cagid, t.cob_date AS cob_date",
+          "MATCH (t:Transaction)
+           WHERE t.cagid = cagid AND t.cob_date = cob_date
+           WITH cagid, cob_date,
+                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
+                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
+                count(t) AS transaction_count
+           MERGE (s:Summary_CAGID {{cagid: cagid, cob_date: cob_date}})
+           ON CREATE SET s.mtm_usd_amount = mtm_usd_amount,
+                         s.mtm_local_amount = mtm_local_amount,
+                         s.transaction_count = transaction_count
+           ON MATCH SET s.mtm_usd_amount = mtm_usd_amount,
+                        s.mtm_local_amount = mtm_local_amount,
+                        s.transaction_count = transaction_count",
+          {{batchSize: {batch_size}, parallel: false}}
+        )
+        """
+        return self._execute_aggregation(query, "Summary_CAGID")
+
+    def _aggregate_by_gfcid(self, date_filter: str, batch_size: int) -> bool:
+        """Aggregate Transaction data by gfcid to create Summary_GFCID nodes."""
+        query = f"""
+        CALL apoc.periodic.iterate(
+          "MATCH (t:Transaction)
+           WHERE t.gfcid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
+           RETURN DISTINCT t.gfcid AS gfcid, t.cob_date AS cob_date",
+          "MATCH (t:Transaction)
+           WHERE t.gfcid = gfcid AND t.cob_date = cob_date
+           WITH gfcid, cob_date,
+                head(collect(t.cagid)) AS cagid,
+                head(collect(t.obligor_name)) AS obligor_name,
+                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
+                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
+                count(t) AS transaction_count
+           MERGE (s:Summary_GFCID {{gfcid: gfcid, cob_date: cob_date}})
+           ON CREATE SET s.cagid = cagid,
+                         s.obligor_name = obligor_name,
+                         s.mtm_usd_amount = mtm_usd_amount,
+                         s.mtm_local_amount = mtm_local_amount,
+                         s.transaction_count = transaction_count
+           ON MATCH SET s.cagid = cagid,
+                        s.obligor_name = obligor_name,
+                        s.mtm_usd_amount = mtm_usd_amount,
+                        s.mtm_local_amount = mtm_local_amount,
+                        s.transaction_count = transaction_count",
+          {{batchSize: {batch_size}, parallel: false}}
+        )
+        """
+        return self._execute_aggregation(query, "Summary_GFCID")
+
+    def _aggregate_by_nettingid(self, date_filter: str, batch_size: int) -> bool:
+        """Aggregate Transaction data by netting_id to create Summary_NETTINGID nodes."""
+        query = f"""
+        CALL apoc.periodic.iterate(
+          "MATCH (t:Transaction)
+           WHERE t.netting_id IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
+           RETURN DISTINCT t.netting_id AS netting_id, t.cob_date AS cob_date",
+          "MATCH (t:Transaction)
+           WHERE t.netting_id = netting_id AND t.cob_date = cob_date
+           WITH netting_id, cob_date,
+                head(collect(t.cagid)) AS cagid,
+                head(collect(t.gfcid)) AS gfcid,
+                head(collect(t.obligor_name)) AS obligor_name,
+                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
+                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
+                count(t) AS transaction_count
+           MERGE (s:Summary_NETTINGID {{netting_id: netting_id, cob_date: cob_date}})
+           ON CREATE SET s.cagid = cagid,
+                         s.gfcid = gfcid,
+                         s.obligor_name = obligor_name,
+                         s.mtm_usd_amount = mtm_usd_amount,
+                         s.mtm_local_amount = mtm_local_amount,
+                         s.transaction_count = transaction_count
+           ON MATCH SET s.cagid = cagid,
+                        s.gfcid = gfcid,
+                        s.obligor_name = obligor_name,
+                        s.mtm_usd_amount = mtm_usd_amount,
+                        s.mtm_local_amount = mtm_local_amount,
+                        s.transaction_count = transaction_count",
+          {{batchSize: {batch_size}, parallel: false}}
+        )
+        """
+        return self._execute_aggregation(query, "Summary_NETTINGID")
+
+    def _execute_aggregation(self, query: str, summary_type: str) -> bool:
+        """Execute an aggregation query and log results."""
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query)
+                summary = result.consume()
+                logger.info(f"Aggregation completed for {summary_type}")
+                return True
+        except Exception as e:
+            logger.error(f"Aggregation failed for {summary_type}: {e}")
+            return False
+
+    def create_relationships(self, cob_date: Optional[str] = None) -> bool:
+        """
+        Create relationships between Summary nodes.
+
+        Args:
+            cob_date: Optional COB date filter
+
+        Returns:
+            True if successful, False otherwise
+        """
+        date_filter = ""
+        if cob_date:
+            date_filter = f" AND t.cob_date = '{cob_date}'"
+
+        query = f"""
+        MATCH (t:Transaction)
+        WHERE t.cagid IS NOT NULL AND t.gfcid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
+        WITH DISTINCT t.cagid AS cagid, t.gfcid AS gfcid, t.cob_date AS cob_date
+        MATCH (sc:Summary_CAGID {{cagid: cagid, cob_date: cob_date}})
+        MATCH (sg:Summary_GFCID {{gfcid: gfcid, cob_date: cob_date}})
+        MERGE (sc)-[:CONTAINS_GFCID]->(sg)
+        """
+
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query)
+                summary = result.consume()
+                logger.info(
+                    f"Created relationships: {summary.counters.relationships_created}"
+                )
+                return True
+        except Exception as e:
+            logger.error(f"Failed to create relationships: {e}")
+            return False
+
+    def run_post_load_processing(
+        self,
+        cob_date: Optional[str] = None,
+        run_aggregation: bool = True,
+        run_relationships: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Run all post-load processing (aggregation and relationships).
+
+        Args:
+            cob_date: Optional COB date filter
+            run_aggregation: Whether to run aggregation queries
+            run_relationships: Whether to create relationships
+
+        Returns:
+            Dict with processing results
+        """
+        results = {
+            "aggregation": {},
+            "relationships": False
+        }
+
+        if run_aggregation:
+            logger.info("Starting aggregation processing...")
+            results["aggregation"] = self.run_aggregation(cob_date=cob_date)
+
+        if run_relationships:
+            logger.info("Creating relationships between Summary nodes...")
+            results["relationships"] = self.create_relationships(cob_date=cob_date)
+
         return results
 
 
