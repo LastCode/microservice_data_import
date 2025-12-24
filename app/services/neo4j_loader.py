@@ -12,6 +12,18 @@ from neo4j import Driver, GraphDatabase
 
 logger = logging.getLogger(__name__)
 
+# Project paths
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+CYPHER_DIR = PROJECT_ROOT / "conf" / "cypher"
+
+# Cypher query file mapping
+CYPHER_FILES = {
+    "cagid": "cypher_02_summary_cagid.cql",
+    "gfcid": "cypher_03_summary_gfcid.cql",
+    "nettingid": "cypher_04_summary_nettingid.cql",
+    "relationships": "cypher_05_create_relationships.cql",
+}
+
 
 @dataclass
 class LoadResult:
@@ -404,16 +416,16 @@ class Neo4jLoader:
         self,
         cob_date: Optional[str] = None,
         aggregate_types: Optional[List[str]] = None,
-        batch_size: int = 500
+        cypher_dir: Optional[Path] = None
     ) -> Dict[str, bool]:
         """
-        Run aggregation queries to create Summary nodes from Transaction data.
+        Run aggregation queries from .cql files to create Summary nodes.
 
         Args:
-            cob_date: Optional COB date filter (format: YYYY-MM-DD)
+            cob_date: Optional COB date filter (format: YYYY-MM-DD) - NOT USED when loading from files
             aggregate_types: List of aggregation types to run ['cagid', 'gfcid', 'nettingid']
                            If None, runs all aggregations
-            batch_size: Batch size for apoc.periodic.iterate
+            cypher_dir: Directory containing .cql files (defaults to conf/cypher/)
 
         Returns:
             Dict with aggregation type as key and success status as value
@@ -421,25 +433,29 @@ class Neo4jLoader:
         if aggregate_types is None:
             aggregate_types = ["cagid", "gfcid", "nettingid"]
 
-        results = {}
+        if cypher_dir is None:
+            cypher_dir = CYPHER_DIR
 
-        # Build date filter clause
-        date_filter = ""
-        if cob_date:
-            date_filter = f" AND t.cob_date = '{cob_date}'"
+        results = {}
 
         for agg_type in aggregate_types:
             try:
-                if agg_type == "cagid":
-                    success = self._aggregate_by_cagid(date_filter, batch_size)
-                elif agg_type == "gfcid":
-                    success = self._aggregate_by_gfcid(date_filter, batch_size)
-                elif agg_type == "nettingid":
-                    success = self._aggregate_by_nettingid(date_filter, batch_size)
-                else:
-                    logger.warning(f"Unknown aggregation type: {agg_type}")
-                    success = False
+                # Get the .cql file for this aggregation type
+                cql_filename = CYPHER_FILES.get(agg_type)
+                if not cql_filename:
+                    logger.warning(f"No .cql file configured for aggregation type: {agg_type}")
+                    results[agg_type] = False
+                    continue
 
+                cql_path = cypher_dir / cql_filename
+
+                if not cql_path.exists():
+                    logger.error(f"Cypher file not found: {cql_path}")
+                    results[agg_type] = False
+                    continue
+
+                logger.info(f"Running aggregation from file: {cql_path}")
+                success = self.run_cypher_file(cql_path)
                 results[agg_type] = success
 
             except Exception as e:
@@ -448,142 +464,33 @@ class Neo4jLoader:
 
         return results
 
-    def _aggregate_by_cagid(self, date_filter: str, batch_size: int) -> bool:
-        """Aggregate Transaction data by cagid to create Summary_CAGID nodes."""
-        query = f"""
-        CALL apoc.periodic.iterate(
-          "MATCH (t:Transaction)
-           WHERE t.cagid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
-           RETURN DISTINCT t.cagid AS cagid, t.cob_date AS cob_date",
-          "MATCH (t:Transaction)
-           WHERE t.cagid = cagid AND t.cob_date = cob_date
-           WITH cagid, cob_date,
-                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
-                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
-                count(t) AS transaction_count
-           MERGE (s:Summary_CAGID {{cagid: cagid, cob_date: cob_date}})
-           ON CREATE SET s.mtm_usd_amount = mtm_usd_amount,
-                         s.mtm_local_amount = mtm_local_amount,
-                         s.transaction_count = transaction_count
-           ON MATCH SET s.mtm_usd_amount = mtm_usd_amount,
-                        s.mtm_local_amount = mtm_local_amount,
-                        s.transaction_count = transaction_count",
-          {{batchSize: {batch_size}, parallel: false}}
-        )
+    def create_relationships(self, cob_date: Optional[str] = None, cypher_dir: Optional[Path] = None) -> bool:
         """
-        return self._execute_aggregation(query, "Summary_CAGID")
-
-    def _aggregate_by_gfcid(self, date_filter: str, batch_size: int) -> bool:
-        """Aggregate Transaction data by gfcid to create Summary_GFCID nodes."""
-        query = f"""
-        CALL apoc.periodic.iterate(
-          "MATCH (t:Transaction)
-           WHERE t.gfcid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
-           RETURN DISTINCT t.gfcid AS gfcid, t.cob_date AS cob_date",
-          "MATCH (t:Transaction)
-           WHERE t.gfcid = gfcid AND t.cob_date = cob_date
-           WITH gfcid, cob_date,
-                head(collect(t.cagid)) AS cagid,
-                head(collect(t.obligor_name)) AS obligor_name,
-                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
-                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
-                count(t) AS transaction_count
-           MERGE (s:Summary_GFCID {{gfcid: gfcid, cob_date: cob_date}})
-           ON CREATE SET s.cagid = cagid,
-                         s.obligor_name = obligor_name,
-                         s.mtm_usd_amount = mtm_usd_amount,
-                         s.mtm_local_amount = mtm_local_amount,
-                         s.transaction_count = transaction_count
-           ON MATCH SET s.cagid = cagid,
-                        s.obligor_name = obligor_name,
-                        s.mtm_usd_amount = mtm_usd_amount,
-                        s.mtm_local_amount = mtm_local_amount,
-                        s.transaction_count = transaction_count",
-          {{batchSize: {batch_size}, parallel: false}}
-        )
-        """
-        return self._execute_aggregation(query, "Summary_GFCID")
-
-    def _aggregate_by_nettingid(self, date_filter: str, batch_size: int) -> bool:
-        """Aggregate Transaction data by netting_id to create Summary_NETTINGID nodes."""
-        query = f"""
-        CALL apoc.periodic.iterate(
-          "MATCH (t:Transaction)
-           WHERE t.netting_id IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
-           RETURN DISTINCT t.netting_id AS netting_id, t.cob_date AS cob_date",
-          "MATCH (t:Transaction)
-           WHERE t.netting_id = netting_id AND t.cob_date = cob_date
-           WITH netting_id, cob_date,
-                head(collect(t.cagid)) AS cagid,
-                head(collect(t.gfcid)) AS gfcid,
-                head(collect(t.obligor_name)) AS obligor_name,
-                sum(toFloat(t.mtm_usd_amount)) AS mtm_usd_amount,
-                sum(toFloat(t.mtm_local_amount)) AS mtm_local_amount,
-                count(t) AS transaction_count
-           MERGE (s:Summary_NETTINGID {{netting_id: netting_id, cob_date: cob_date}})
-           ON CREATE SET s.cagid = cagid,
-                         s.gfcid = gfcid,
-                         s.obligor_name = obligor_name,
-                         s.mtm_usd_amount = mtm_usd_amount,
-                         s.mtm_local_amount = mtm_local_amount,
-                         s.transaction_count = transaction_count
-           ON MATCH SET s.cagid = cagid,
-                        s.gfcid = gfcid,
-                        s.obligor_name = obligor_name,
-                        s.mtm_usd_amount = mtm_usd_amount,
-                        s.mtm_local_amount = mtm_local_amount,
-                        s.transaction_count = transaction_count",
-          {{batchSize: {batch_size}, parallel: false}}
-        )
-        """
-        return self._execute_aggregation(query, "Summary_NETTINGID")
-
-    def _execute_aggregation(self, query: str, summary_type: str) -> bool:
-        """Execute an aggregation query and log results."""
-        try:
-            with self.driver.session(database=self.database) as session:
-                result = session.run(query)
-                summary = result.consume()
-                logger.info(f"Aggregation completed for {summary_type}")
-                return True
-        except Exception as e:
-            logger.error(f"Aggregation failed for {summary_type}: {e}")
-            return False
-
-    def create_relationships(self, cob_date: Optional[str] = None) -> bool:
-        """
-        Create relationships between Summary nodes.
+        Create relationships between Summary nodes by loading from .cql file.
 
         Args:
-            cob_date: Optional COB date filter
+            cob_date: Optional COB date filter - NOT USED when loading from files
+            cypher_dir: Directory containing .cql files (defaults to conf/cypher/)
 
         Returns:
             True if successful, False otherwise
         """
-        date_filter = ""
-        if cob_date:
-            date_filter = f" AND t.cob_date = '{cob_date}'"
+        if cypher_dir is None:
+            cypher_dir = CYPHER_DIR
 
-        query = f"""
-        MATCH (t:Transaction)
-        WHERE t.cagid IS NOT NULL AND t.gfcid IS NOT NULL AND t.cob_date IS NOT NULL{date_filter}
-        WITH DISTINCT t.cagid AS cagid, t.gfcid AS gfcid, t.cob_date AS cob_date
-        MATCH (sc:Summary_CAGID {{cagid: cagid, cob_date: cob_date}})
-        MATCH (sg:Summary_GFCID {{gfcid: gfcid, cob_date: cob_date}})
-        MERGE (sc)-[:CONTAINS_GFCID]->(sg)
-        """
-
-        try:
-            with self.driver.session(database=self.database) as session:
-                result = session.run(query)
-                summary = result.consume()
-                logger.info(
-                    f"Created relationships: {summary.counters.relationships_created}"
-                )
-                return True
-        except Exception as e:
-            logger.error(f"Failed to create relationships: {e}")
+        cql_filename = CYPHER_FILES.get("relationships")
+        if not cql_filename:
+            logger.error("No .cql file configured for relationships")
             return False
+
+        cql_path = cypher_dir / cql_filename
+
+        if not cql_path.exists():
+            logger.error(f"Cypher file not found: {cql_path}")
+            return False
+
+        logger.info(f"Creating relationships from file: {cql_path}")
+        return self.run_cypher_file(cql_path)
 
     def run_post_load_processing(
         self,
