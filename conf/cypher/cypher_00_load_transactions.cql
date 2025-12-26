@@ -11,7 +11,7 @@
 CALL {{
 LOAD CSV WITH HEADERS FROM 'file://{file_name}' AS row
 FIELDTERMINATOR ','
-WITH row WHERE row.transaction_id IS NOT NULL AND row.gfcid IS NOT NULL
+WITH row WHERE row.transaction_id IS NOT NULL AND row.gfcid IS NOT NULL AND row.cob_date IS NOT NULL
 MATCH (g:Summary_GFCID {{gfcid: row.gfcid}})
 MERGE (t:Transaction {{transaction_id: row.transaction_id, cob_date: row.cob_date}})
 ON CREATE SET
