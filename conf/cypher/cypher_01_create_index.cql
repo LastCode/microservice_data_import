@@ -8,6 +8,7 @@ CALL dbms.setConfigValue('db.transaction.timeout', '100m');
 // ============================================================
 // Transaction Node Indexes
 // ============================================================
+CREATE INDEX IF NOT EXISTS FOR (t:Transaction) ON (t.transaction_id, t.cob_date);
 CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.transaction_id);
 CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.cagid);
 CREATE INDEX IF NOT EXISTS FOR (n:Transaction) ON (n.gfcid);
