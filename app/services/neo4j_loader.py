@@ -18,6 +18,7 @@ CYPHER_DIR = PROJECT_ROOT / "conf" / "cypher"
 
 # Cypher query file mapping
 CYPHER_FILES = {
+    "transactions": "cypher_00_load_transactions.cql",
     "cagid": "cypher_02_summary_cagid.cql",
     "gfcid": "cypher_03_summary_gfcid.cql",
     "nettingid": "cypher_04_summary_nettingid.cql",
@@ -233,6 +234,54 @@ class Neo4jLoader:
     # Default base path for Neo4j LOAD CSV
     DEFAULT_BASE_PATH = "/mnt/nas/"
 
+    def _get_transaction_query_template(self, cypher_dir: Optional[Path] = None) -> str:
+        """
+        Get the transaction query template from .cql file.
+
+        Falls back to DEFAULT_QUERY_TEMPLATE if file not found.
+
+        Args:
+            cypher_dir: Directory containing .cql files (defaults to conf/cypher/)
+
+        Returns:
+            Query template string with {file_name} placeholder
+        """
+        if cypher_dir is None:
+            cypher_dir = CYPHER_DIR
+
+        cql_filename = CYPHER_FILES.get("transactions")
+        if not cql_filename:
+            logger.warning("No .cql file configured for transactions, using default template")
+            return self.DEFAULT_QUERY_TEMPLATE
+
+        cql_path = cypher_dir / cql_filename
+
+        if not cql_path.exists():
+            logger.warning(f"Transaction cypher file not found: {cql_path}, using default template")
+            return self.DEFAULT_QUERY_TEMPLATE
+
+        try:
+            query = cql_path.read_text(encoding="utf-8")
+
+            # Remove comments for cleaner execution
+            lines = []
+            for line in query.split("\n"):
+                stripped = line.strip()
+                if stripped and not stripped.startswith("//"):
+                    lines.append(line)
+            clean_query = "\n".join(lines)
+
+            if not clean_query.strip():
+                logger.warning(f"Empty query in file: {cql_path}, using default template")
+                return self.DEFAULT_QUERY_TEMPLATE
+
+            logger.debug(f"Loaded transaction query from: {cql_path}")
+            return clean_query
+
+        except Exception as e:
+            logger.error(f"Failed to read transaction query file: {e}, using default template")
+            return self.DEFAULT_QUERY_TEMPLATE
+
     def load_file(self, file_path: Path, base_path: Optional[str] = None) -> LoadResult:
         """
         Load a single CSV file into Neo4j.
@@ -257,8 +306,16 @@ class Neo4jLoader:
             # Use full absolute path for local Neo4j server
             full_path = str(file_path).replace(" ", "%20")
 
+            # Get query template: use custom template if provided, otherwise load from .cql file
+            if self.query_template != self.DEFAULT_QUERY_TEMPLATE:
+                # User provided a custom template
+                query_template = self.query_template
+            else:
+                # Load from .cql file
+                query_template = self._get_transaction_query_template()
+
             # Execute the query
-            query = self.query_template.format(file_name=full_path)
+            query = query_template.format(file_name=full_path)
 
             with self.driver.session(database=self.database) as session:
                 result = session.run(query)
