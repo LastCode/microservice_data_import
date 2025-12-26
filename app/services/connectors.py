@@ -228,8 +228,10 @@ class DataMapResolver:
                             params = {}
 
                         config = {
+                            "tech_lead": row.get("tech_lead", ""),
                             "domain_type": row_type,
                             "domain_name": row_name,
+                            "physical_name": row.get("physical_name", ""),
                             "connector_type": row.get("connector_type", "linux"),
                             "connector_params": params,
                             "source_file_path_template": row.get("source_file_path_template", ""),

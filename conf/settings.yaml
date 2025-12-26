@@ -82,3 +82,6 @@ LINUX_ SERVERS:
   server1:
     user: mC56506
     pass: Francis@8888
+  '192.168.50.146':
+    user: francis
+    pass: 'vmp4jo6z/  '

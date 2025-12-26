@@ -1,5 +1,5 @@
-domain_type,domain_name,connector_type,connector_params,source_file_path_template
-CURATED,Credit Risk Transactions,linux,"{""server_name"":  ""192.168.50.146""}",/Users/francis/dev_citi/microservice_data_import/mnt/src/olympus_credit_txn_{cob_date}.dat
-CURATED,Market Risk Positions,linux,"{""server_name"": ""sd-fb5e-ceca""}",/mnt/nas/market_risk_pos_{cob_date}.dat
-RAW,Trade Events,sftp,"{""server_name"": ""sftp-server1""}",/data/trades/trade_events_{cob_date}.csv
-,,,
+tech_lead,domain_type,domain_name,physical_name,connector_type,connector_params,source_file_path_template
+SH27160,CURATED,Credit Risk Transactions,161534:hive:olympus:gfolyrsk_cr_managed:om_credit_transaction_fact,linux,"{""server_name"":  ""192.168.50.146""}",/Users/francis/dev_citi/microservice_data_import/mnt/src/olympus_credit_txn_{cob_date}.dat
+W56116,CURATED,Market Risk Positions,161602:rcagr/agreement/match/sftnettingsummary,linux,"{""server_name"": ""sd-fb5e-ceca""}",/mnt/nas/market_risk_pos_{cob_date}.dat
+SM26704,CORE,Trade Events,161233:oracle:CRCV1AP:CVARPROD:CVARCPOPULATION,sftp,"{""server_name"": ""sftp-server1""}",/data/trades/trade_events_{cob_date}.csv
+,,,,,

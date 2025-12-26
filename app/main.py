@@ -32,4 +32,4 @@ app.include_router(router)
 
 if __name__ == "__main__":
     # Allow running via `python app/main.py` (useful in simple dev setups).
-    uvicorn.run("app.main:app", host="0.0.0.0", port=9000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=9090, reload=True)

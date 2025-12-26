@@ -34,17 +34,23 @@ class ImportJobRequest(BaseModel):
     cob_date: date
 
 
-def _state_to_status(state: WorkflowState) -> ImportStatus:
+def _state_to_status(state: WorkflowState, domain_key: str = "") -> ImportStatus:
     return ImportStatus(
         workflow_id=state.workflow_id,
         status=state.status.value if isinstance(state.status, WorkflowStatus) else str(state.status),
         detail=state.message,
+        domain_key=domain_key,
     )
 
 
 def _run_pipeline(workflow_id: str, payload: ImportJobRequest) -> None:
     """Run the import pipeline in the background."""
-    STATUSES[workflow_id] = ImportStatus(workflow_id=workflow_id, status=WorkflowStatus.IN_PROGRESS.value)
+    domain_key = f"{payload.domain_type}:{payload.domain_name}"
+    STATUSES[workflow_id] = ImportStatus(
+        workflow_id=workflow_id,
+        status=WorkflowStatus.IN_PROGRESS.value,
+        domain_key=domain_key,
+    )
     try:
         request = ImportRequest(
             domain_type=payload.domain_type,
@@ -52,13 +58,14 @@ def _run_pipeline(workflow_id: str, payload: ImportJobRequest) -> None:
             cob_date=payload.cob_date,
         )
         state = pipeline.run(request, workflow_id=workflow_id)
-        STATUSES[workflow_id] = _state_to_status(state)
+        STATUSES[workflow_id] = _state_to_status(state, domain_key=domain_key)
     except Exception as exc:  # pragma: no cover - background failure logging
         logger.exception("Import workflow failed: %s", workflow_id)
         STATUSES[workflow_id] = ImportStatus(
             workflow_id=workflow_id,
             status=WorkflowStatus.FAILED.value,
             detail=str(exc),
+            domain_key=domain_key,
         )
 
 
@@ -67,7 +74,12 @@ async def create_import(
     payload: ImportJobRequest = Body(...), background_tasks: BackgroundTasks = None
 ) -> ImportStatus:
     workflow_id = str(uuid4())
-    STATUSES[workflow_id] = ImportStatus(workflow_id=workflow_id, status=WorkflowStatus.PENDING.value)
+    domain_key = f"{payload.domain_type}:{payload.domain_name}"
+    STATUSES[workflow_id] = ImportStatus(
+        workflow_id=workflow_id,
+        status=WorkflowStatus.PENDING.value,
+        domain_key=domain_key,
+    )
     background_tasks.add_task(_run_pipeline, workflow_id, payload)
     return STATUSES[workflow_id]
 
